@@ -1,222 +1,250 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import sys
-sys.setrecursionlimit(1000000)
+from pathlib import Path
+from functools import lru_cache
 
-# --------------------
-# 位打包：每行用 12bits 存区间 [l,r]
-# 优势：状态只有一个整数，极快的 hash 与 copy
-ROW_FIELD_BITS = 12
-LR_BITS = 6
-LR_MASK = (1 << LR_BITS) - 1
-ROW_MASK = (1 << ROW_FIELD_BITS) - 1
+# -------------------- 配置 --------------------
+sys.setrecursionlimit(20000)
+INPUT_PATH = Path("input.txt")
+OUTPUT_PATH = Path("output.txt")
 
-def pack_lr(l, r):
-    return (l << LR_BITS) | r
+# -------------------- 全局数据 --------------------
+# 使用全局变量以供求解函数快速访问，避免参数传递
+R0, R1, R2, R3 = [], [], [], []
 
-def unpack_lr(field):
-    l = (field >> LR_BITS) & LR_MASK
-    r = field & LR_MASK
-    return l, r
+# -------------------- 针对不同行数的极速求解器 --------------------
+# 利用 lru_cache (C后端) 代替手写字典
+# 移除循环，直接展开逻辑，减少解释器开销
 
-def get_row_field(state_int, row_idx):
-    off = row_idx * ROW_FIELD_BITS
-    return (state_int >> off) & ROW_MASK
+@lru_cache(maxsize=None)
+def solve_1(l0, r0):
+    # 只有一行，其实就是贪心拿大的？不，还是得递归，因为是轮流拿
+    # 但为了统一逻辑，使用同样的 minimax 结构
+    if l0 > r0: return 0
+    
+    # 左边
+    v1 = R0[l0] - solve_1(l0 + 1, r0)
+    
+    # 右边 (如果剩余超过1张)
+    if l0 < r0:
+        v2 = R0[r0] - solve_1(l0, r0 - 1)
+        if v2 > v1:
+            return v2
+    return v1
 
-def set_row_field(state_int, row_idx, new_field):
-    off = row_idx * ROW_FIELD_BITS
-    mask = ROW_MASK << off
-    return (state_int & ~mask) | ((new_field & ROW_MASK) << off)
+@lru_cache(maxsize=None)
+def solve_2(l0, r0, l1, r1):
+    best = -99999999
+    can_move = False
 
-# --------------------
-# 输入
-def parse_input(path="input.txt"):
-    rows = []
-    with open(path, "r", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    if not lines:
-        return rows
-    n = int(lines[0])  # 实际不需要，用 rows 自身长度即可
-    for ln in lines[1:]:
-        parts = ln.split(",")
-        rows.append([int(x) for x in parts])
-    return rows
+    # Row 0
+    if l0 <= r0:
+        can_move = True
+        # Left
+        v = R0[l0] - solve_2(l0 + 1, r0, l1, r1)
+        if v > best: best = v
+        # Right
+        if l0 < r0:
+            v = R0[r0] - solve_2(l0, r0 - 1, l1, r1)
+            if v > best: best = v
 
-# --------------------
-# 前缀和：用于快速区间求和（少用，但便捷）
-def make_prefix(rows):
-    prefs = []
-    for row in rows:
-        s = 0
-        ps = [0]
-        for v in row:
-            s += v
-            ps.append(s)
-        prefs.append(ps)
-    return prefs
+    # Row 1
+    if l1 <= r1:
+        can_move = True
+        # Left
+        v = R1[l1] - solve_2(l0, r0, l1 + 1, r1)
+        if v > best: best = v
+        # Right
+        if l1 < r1:
+            v = R1[r1] - solve_2(l0, r0, l1, r1 - 1)
+            if v > best: best = v
 
-def interval_sum(pref, l, r):
-    return pref[r+1] - pref[l]
+    return best if can_move else 0
 
-# --------------------
-# 初始状态：所有行均为 [0, len(row)-1]
-def build_initial_state(rows):
-    s = 0
-    for i, row in enumerate(rows):
-        s = set_row_field(s, i, pack_lr(0, len(row)-1))
-    return s
+@lru_cache(maxsize=None)
+def solve_3(l0, r0, l1, r1, l2, r2):
+    best = -99999999
+    can_move = False
 
-# --------------------
-# negamax(alpha-beta):
-# 返回：当前玩家看到的 (红分 - 蓝分)
-# 关键优化：
-#   - 使用整数状态 + 整形 key，缓存极快
-#   - 历史启发减少深层搜索
-def negamax(state_int, is_red, alpha, beta, rows, prefs, nrows, cache, history_table):
-    key = (state_int << 1) | (1 if is_red else 0)
-    if key in cache:
-        return cache[key]
+    # Row 0
+    if l0 <= r0:
+        can_move = True
+        v = R0[l0] - solve_3(l0 + 1, r0, l1, r1, l2, r2)
+        if v > best: best = v
+        if l0 < r0:
+            v = R0[r0] - solve_3(l0, r0 - 1, l1, r1, l2, r2)
+            if v > best: best = v
 
-    # --- 快速终止：剩牌数为 0 或 1 时无需继续搜索 ---
-    rem = 0
-    last_val = 0
-    get_field = get_row_field
-    unpack = unpack_lr
-    for i in range(nrows):
-        field = get_field(state_int, i)
-        l, r = unpack(field)
-        if l <= r:
-            cnt = r - l + 1
-            rem += cnt
-            if rem == 1:
-                last_val = rows[i][l]
-                break
-    if rem == 0:
-        cache[key] = 0
-        return 0
-    if rem == 1:
-        res = last_val if is_red else -last_val
-        cache[key] = res
-        return res
+    # Row 1
+    if l1 <= r1:
+        can_move = True
+        v = R1[l1] - solve_3(l0, r0, l1 + 1, r1, l2, r2)
+        if v > best: best = v
+        if l1 < r1:
+            v = R1[r1] - solve_3(l0, r0, l1, r1 - 1, l2, r2)
+            if v > best: best = v
 
-    sign = 1 if is_red else -1
+    # Row 2
+    if l2 <= r2:
+        can_move = True
+        v = R2[l2] - solve_3(l0, r0, l1, r1, l2 + 1, r2)
+        if v > best: best = v
+        if l2 < r2:
+            v = R2[r2] - solve_3(l0, r0, l1, r1, l2, r2 - 1)
+            if v > best: best = v
+            
+    return best if can_move else 0
 
-    # --- 生成所有可选动作，并根据即时收益 + 历史启发排序 ---
-    moves = []
-    append = moves.append
-    rows_local = rows
+@lru_cache(maxsize=None)
+def solve_4(l0, r0, l1, r1, l2, r2, l3, r3):
+    best = -99999999
+    can_move = False
 
-    for i in range(nrows):
-        field = get_field(state_int, i)
-        l, r = unpack(field)
-        if l > r:
-            continue
+    # Row 0
+    if l0 <= r0:
+        can_move = True
+        v = R0[l0] - solve_4(l0 + 1, r0, l1, r1, l2, r2, l3, r3)
+        if v > best: best = v
+        if l0 < r0:
+            v = R0[r0] - solve_4(l0, r0 - 1, l1, r1, l2, r2, l3, r3)
+            if v > best: best = v
 
-        # left
-        v_l = rows_local[i][l]
-        new_state_l = set_row_field(state_int, i, pack_lr(l+1, r))
-        id_l = (i << 1) | 0
-        h_l = history_table.get(id_l, 0)
-        append((sign * v_l + (h_l >> 1), new_state_l, v_l, id_l))
+    # Row 1
+    if l1 <= r1:
+        can_move = True
+        v = R1[l1] - solve_4(l0, r0, l1 + 1, r1, l2, r2, l3, r3)
+        if v > best: best = v
+        if l1 < r1:
+            v = R1[r1] - solve_4(l0, r0, l1, r1 - 1, l2, r2, l3, r3)
+            if v > best: best = v
 
-        # right
-        if r > l:
-            v_r = rows_local[i][r]
-            new_state_r = set_row_field(state_int, i, pack_lr(l, r-1))
-            id_r = (i << 1) | 1
-            h_r = history_table.get(id_r, 0)
-            append((sign * v_r + (h_r >> 1), new_state_r, v_r, id_r))
+    # Row 2
+    if l2 <= r2:
+        can_move = True
+        v = R2[l2] - solve_4(l0, r0, l1, r1, l2 + 1, r2, l3, r3)
+        if v > best: best = v
+        if l2 < r2:
+            v = R2[r2] - solve_4(l0, r0, l1, r1, l2, r2 - 1, l3, r3)
+            if v > best: best = v
+            
+    # Row 3
+    if l3 <= r3:
+        can_move = True
+        v = R3[l3] - solve_4(l0, r0, l1, r1, l2, r2, l3 + 1, r3)
+        if v > best: best = v
+        if l3 < r3:
+            v = R3[r3] - solve_4(l0, r0, l1, r1, l2, r2, l3, r3 - 1)
+            if v > best: best = v
 
-    moves.sort(reverse=True, key=lambda x: x[0])
+    return best if can_move else 0
 
-    # --- alpha-beta 主循环 ---
-    best = -10**15 if is_red else 10**15
-    a, b = alpha, beta
+# -------------------- 主逻辑 --------------------
 
-    for _, new_state, card, move_id in moves:
-        if is_red:
-            val = card + negamax(new_state, False, a, b, rows, prefs, nrows, cache, history_table)
-            if val > best:
-                best = val
-            if best > a:
-                a = best
-            if a >= b:
-                history_table[move_id] = history_table.get(move_id, 0) + 1
-                break
-        else:
-            val = negamax(new_state, True, a, b, rows, prefs, nrows, cache, history_table) - card
-            if val < best:
-                best = val
-            if val < b:
-                b = val
-            if a >= b:
-                history_table[move_id] = history_table.get(move_id, 0) + 1
-                break
-
-    cache[key] = best
-    return best
-
-# --------------------
-# 主程序：只做初始层枚举 + 调 negamax
 def main():
-    rows = parse_input("input.txt")
-    if not rows:
-        with open("output.txt", "w", encoding="utf-8") as f:
-            f.write("第1行 左端 牌点数0\n")
-            f.write("小红: 0 小蓝: 0\n")
+    global R0, R1, R2, R3
+    
+    # 1. 读取输入
+    # 优化：快速读取，不使用复杂的 split 逻辑，假设输入格式规范
+    try:
+        with INPUT_PATH.open("r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception:
         return
 
-    prefs = make_prefix(rows)
-    nrows = len(rows)
-    state0 = build_initial_state(rows)
-    total = sum(sum(r) for r in rows)
+    if not lines: return
+    
+    rows_data = []
+    total_sum = 0
+    
+    # 第一行是 n，跳过
+    for line in lines[1:]:
+        if not line.strip(): continue
+        # 快速解析整数
+        parts = tuple(map(int, line.split(',')))
+        if parts:
+            rows_data.append(parts)
+            total_sum += sum(parts)
 
-    cache = {}
-    history_table = {}
+    n_rows = len(rows_data)
+    
+    # 填充全局变量
+    if n_rows >= 1: R0 = rows_data[0]
+    if n_rows >= 2: R1 = rows_data[1]
+    if n_rows >= 3: R2 = rows_data[2]
+    if n_rows >= 4: R3 = rows_data[3]
 
-    # --- 枚举红方第一步 ---
-    get_field = get_row_field
-    unpack = unpack_lr
+    # 2. 根节点决策
+    # 我们需要找出第一步最优解，同时复用 solver 的缓存
+    
+    best_val = -99999999
+    best_move_str = ""
+    
+    # 辅助：根据行数调用对应的 solver
+    # args: (l0, r0, l1, r1...)
+    
+    # 构造初始索引
+    inits = []
+    for r in rows_data:
+        inits.append(0)           # l
+        inits.append(len(r) - 1)  # r
+        
+    # 将初始索引转为 Tuple 方便切片传参，虽然下面是手动展开
+    # 但为了第一步逻辑清晰，我们手动展开第一步
+    
+    def call_solver(current_idxs):
+        if n_rows == 1: return solve_1(*current_idxs)
+        if n_rows == 2: return solve_2(*current_idxs)
+        if n_rows == 3: return solve_3(*current_idxs)
+        if n_rows == 4: return solve_4(*current_idxs)
+        return 0
 
-    initial = []
-    for i in range(nrows):
-        field = get_field(state0, i)
-        l, r = unpack(field)
-        if l > r:
-            continue
-        # left
-        v_l = rows[i][l]
-        initial.append((v_l,
-                        set_row_field(state0, i, pack_lr(l+1, r)),
-                        i, 0))
-        # right
-        if r > l:
-            v_r = rows[i][r]
-            initial.append((v_r,
-                            set_row_field(state0, i, pack_lr(l, r-1)),
-                            i, 1))
+    # 遍历每一个可能的起手
+    for i in range(n_rows):
+        l, r = inits[i*2], inits[i*2+1]
+        
+        # 如果行空 (l > r)，跳过
+        if l > r: continue
+        
+        # --- 尝试左端 ---
+        card_l = rows_data[i][l]
+        
+        # 构造拿走左边后的索引列表
+        next_idxs = list(inits)
+        next_idxs[i*2] += 1 # l + 1
+        
+        # 递归获得对手的最优分差 (opponent_diff)
+        # 当前分差 = card - opponent_diff
+        diff_l = card_l - call_solver(next_idxs)
+        
+        if diff_l > best_val:
+            best_val = diff_l
+            best_move_str = f"第{i+1}行 左端 牌点数{card_l}"
+            
+        # --- 尝试右端 (如果 l != r) ---
+        if l < r:
+            card_r = rows_data[i][r]
+            
+            next_idxs_r = list(inits)
+            next_idxs_r[i*2+1] -= 1 # r - 1
+            
+            diff_r = card_r - call_solver(next_idxs_r)
+            
+            if diff_r > best_val:
+                best_val = diff_r
+                best_move_str = f"第{i+1}行 右端 牌点数{card_r}"
 
-    initial.sort(reverse=True, key=lambda x: x[0])
-
-    best_move = None
-    best_val = -10**15
-    alpha = -10**15
-    beta = 10**15
-
-    for v, new_state, row, side in initial:
-        val = v + negamax(new_state, False, alpha, beta,
-                          rows, prefs, nrows, cache, history_table)
-        if val > best_val:
-            best_val = val
-            best_move = (row, "左端" if side == 0 else "右端", v)
-        if best_val > alpha:
-            alpha = best_val
-
-    diff = best_val
-    red = (total + diff) // 2
-    blue = total - red
-
-    with open("output.txt", "w", encoding="utf-8") as f:
-        f.write(f"第{best_move[0]+1}行 {best_move[1]} 牌点数{best_move[2]}\n")
-        f.write(f"小红: {red} 小蓝: {blue}\n")
+    # 3. 计算最终分
+    # diff = Red - Blue
+    # sum  = Red + Blue
+    # Red = (sum + diff) / 2
+    if best_move_str == "":
+        # 没有任何牌的情况
+        OUTPUT_PATH.write_text("第1行 左端 牌点数0\n小红: 0 小蓝: 0\n", encoding="utf-8")
+    else:
+        red_score = (total_sum + best_val) // 2
+        blue_score = (total_sum - best_val) // 2
+        OUTPUT_PATH.write_text(f"{best_move_str}\n小红: {red_score} 小蓝: {blue_score}\n", encoding="utf-8")
 
 if __name__ == "__main__":
     main()
